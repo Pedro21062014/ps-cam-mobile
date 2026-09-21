@@ -1,0 +1,6 @@
+{
+  "name": "PS Cam",
+  "description": "Câmera de segurança inteligente com monitoramento em tempo real, detecção de movimento, modo segundo plano e controle remoto.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
