@@ -186,6 +186,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
         }
+
+        // When user logs in or auth state changes, re-publish if currently streaming
+        viewModelScope.launch(Dispatchers.IO) {
+            currentUser.collect { user ->
+                if (_appMode.value == AppMode.CAMERA_HOST) {
+                    publishToCloudCatalog()
+                }
+            }
+        }
     }
 
     fun toggleTheme() {
@@ -268,6 +277,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             "pssom.com.br@gmail.com"
         }
 
+        val videoMeetStreamUrl = "https://video-chat-bvo.pages.dev/?mode=stream&role=viewer&room=$currentPin&clean=true&embed=true&header=false"
+
         val camera = CloudCameraDevice(
             id = localDeviceId,
             userId = user?.uid ?: "user_pssom",
@@ -279,7 +290,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             lastSeen = System.currentTimeMillis(),
             quality = _videoQuality.value.name,
             motionDetected = _isMotionDetected.value,
-            streamUrl = "http://$currentIp:8080/video",
+            streamUrl = videoMeetStreamUrl,
             batteryLevel = battery,
             isCharging = isCharging,
             pin = currentPin,
@@ -288,10 +299,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             type = "webrtc"
         )
 
-        // 1. Publish in Camera catalog
+        // 1. Publish in Camera catalog (Firestore & Realtime Database under account)
         firebaseManager.publishCamera(camera)
 
-        // 2. Register 6-Digit Pairing PIN in both Firestore & Realtime DB (/pins/{pin})
+        // 2. Persist in local Room database
+        viewModelScope.launch(Dispatchers.IO) {
+            deviceDao.insertDevice(
+                SavedDeviceEntity(
+                    id = localDeviceId,
+                    deviceName = devName,
+                    ipAddress = currentIp,
+                    port = 8080,
+                    isOnline = true,
+                    lastSeen = System.currentTimeMillis()
+                )
+            )
+        }
+
+        // 3. Register 6-Digit Pairing PIN in both Firestore & Realtime DB (/pins/{pin})
         firebaseManager.registerPairingPin(
             pin = currentPin,
             cameraId = localDeviceId,

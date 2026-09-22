@@ -304,9 +304,20 @@ class FirebaseManager private constructor(private val context: Context) {
         val user = _currentUser.value
         val (battery, isCharging) = getBatteryInfo()
 
+        val effectiveUserId = when {
+            user != null && user.uid.isNotEmpty() -> user.uid
+            camera.userId.isNotEmpty() -> camera.userId
+            else -> "user_pssom"
+        }
+        val effectiveEmail = when {
+            user != null && !user.isAnonymous && !user.email.isNullOrEmpty() -> user.email!!
+            camera.userEmail.isNotEmpty() -> camera.userEmail
+            else -> "pssom.com.br@gmail.com"
+        }
+
         val cameraToSave = camera.copy(
-            userId = user?.uid ?: camera.userId,
-            userEmail = user?.email ?: (if (user?.isAnonymous == true) "Convidado" else camera.userEmail),
+            userId = effectiveUserId,
+            userEmail = effectiveEmail,
             batteryLevel = battery,
             isCharging = isCharging,
             isOnline = true,
@@ -329,17 +340,27 @@ class FirebaseManager private constructor(private val context: Context) {
                 onComplete?.invoke(false)
             }
 
-        // 2. Also write to Firestore /users/{userId}/cameras/{id} if user logged in
-        if (user != null && user.uid.isNotEmpty()) {
-            firestore.collection("users").document(user.uid).collection("cameras").document(cameraId)
+        // 2. Also write to Firestore /users/{userId}/cameras/{id}
+        if (effectiveUserId.isNotEmpty()) {
+            firestore.collection("users").document(effectiveUserId).collection("cameras").document(cameraId)
                 .set(payload, SetOptions.merge())
         }
+        // Write to Firestore /devices/{id}
+        firestore.collection("devices").document(cameraId)
+            .set(payload, SetOptions.merge())
 
-        // 3. Dual write to Realtime Database /cameras/{id} for direct web realtime compatibility
+        // 3. Dual write to Realtime Database /cameras/{id}, /users/{userId}/cameras/{id} and /devices/{id}
         try {
             realtimeDb.getReference("cameras").child(cameraId).setValue(payload)
-            if (user != null && user.uid.isNotEmpty()) {
-                realtimeDb.getReference("users").child(user.uid).child("cameras").child(cameraId).setValue(payload)
+            if (effectiveUserId.isNotEmpty()) {
+                realtimeDb.getReference("users").child(effectiveUserId).child("cameras").child(cameraId).setValue(payload)
+            }
+            realtimeDb.getReference("devices").child(cameraId).setValue(payload)
+            if (cameraToSave.pin.isNotEmpty()) {
+                realtimeDb.getReference("rooms").child(cameraToSave.pin).child("camera").setValue(payload)
+            }
+            if (cameraToSave.rawPin.isNotEmpty() && cameraToSave.rawPin != cameraToSave.pin) {
+                realtimeDb.getReference("rooms").child(cameraToSave.rawPin).child("camera").setValue(payload)
             }
         } catch (e: Exception) {
             Log.w("FirebaseManager", "RTDB write error: ${e.message}")

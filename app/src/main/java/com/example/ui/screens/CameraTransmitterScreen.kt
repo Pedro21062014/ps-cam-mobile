@@ -2,16 +2,11 @@ package com.example.ui.screens
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.CameraManager
+import android.webkit.WebView
 import android.widget.Toast
 import android.view.ViewGroup
-import androidx.camera.core.Camera
-import androidx.camera.core.CameraSelector
-import androidx.camera.core.ImageAnalysis
-import androidx.camera.core.ImageCapture
-import androidx.camera.core.ImageCaptureException
-import androidx.camera.core.Preview
-import androidx.camera.lifecycle.ProcessCameraProvider
-import androidx.camera.view.PreviewView
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -55,7 +50,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -69,28 +63,22 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.core.content.ContextCompat
-import com.example.camera.MotionAnalyzer
 import com.example.model.AppMode
 import com.example.model.CameraFacing
-import com.example.model.VideoQuality
 import com.example.ui.theme.PsCamTheme
 import com.example.ui.theme.PsCyan
 import com.example.ui.theme.PsDanger
 import com.example.ui.theme.PsOrangeDark
 import com.example.ui.theme.PsOrangePrimary
-import com.example.ui.theme.PsSkyPrimary
 import com.example.ui.theme.PsSuccess
 import com.example.ui.viewmodel.MainViewModel
 import com.example.util.QRCodeUtil
-import java.util.concurrent.Executors
 
 @Composable
 fun CameraTransmitterScreen(
@@ -98,7 +86,6 @@ fun CameraTransmitterScreen(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
-    val lifecycleOwner = LocalLifecycleOwner.current
     val colors = PsCamTheme.colors
 
     val isFlashOn by viewModel.isFlashOn.collectAsState()
@@ -109,26 +96,30 @@ fun CameraTransmitterScreen(
     val motionScore by viewModel.motionScore.collectAsState()
     val isMotionDetected by viewModel.isMotionDetected.collectAsState()
     val localIp by viewModel.localIp.collectAsState()
-    val motionSensitivity by viewModel.motionSensitivity.collectAsState()
-    val currentUser by viewModel.currentUser.collectAsState()
     val pairingPin by viewModel.pairingPin.collectAsState()
+    val currentUser by viewModel.currentUser.collectAsState()
 
-    var cameraInstance by remember { mutableStateOf<Camera?>(null) }
-    var imageCaptureInstance by remember { mutableStateOf<ImageCapture?>(null) }
-    var showQrDialog by remember { mutableStateOf(false) }
-
-    val cameraExecutor = remember { Executors.newSingleThreadExecutor() }
-
-    DisposableEffect(Unit) {
-        onDispose {
-            cameraExecutor.shutdown()
-        }
+    val accountEmail = if (currentUser != null && !currentUser!!.isAnonymous && !currentUser!!.email.isNullOrEmpty()) {
+        currentUser!!.email!!
+    } else {
+        "pssom.com.br@gmail.com"
     }
 
-    // React to flashlight changes
-    LaunchedEffect(isFlashOn, cameraInstance) {
+    var showQrDialog by remember { mutableStateOf(false) }
+
+    val cameraManager = remember {
+        context.getSystemService(Context.CAMERA_SERVICE) as? CameraManager
+    }
+
+    // Direct Torch Hardware Control
+    LaunchedEffect(isFlashOn) {
         try {
-            cameraInstance?.cameraControl?.enableTorch(isFlashOn)
+            val cameraId = cameraManager?.cameraIdList?.firstOrNull { id ->
+                val chars = cameraManager.getCameraCharacteristics(id)
+                chars.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true &&
+                chars.get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_BACK
+            } ?: "0"
+            cameraManager?.setTorchMode(cameraId, isFlashOn)
         } catch (_: Exception) {}
     }
 
@@ -137,117 +128,15 @@ fun CameraTransmitterScreen(
             .fillMaxSize()
             .background(Color.Black)
     ) {
-        // CameraX Live Preview & Motion Analysis
+        // VideoMeet WebRTC P2P Hardware Transmitter View
         AndroidView(
             factory = { ctx ->
-                val previewView = PreviewView(ctx).apply {
+                viewModel.webRtcManager?.getOrCreateWebView(ctx) ?: WebView(ctx).apply {
                     layoutParams = ViewGroup.LayoutParams(
                         ViewGroup.LayoutParams.MATCH_PARENT,
                         ViewGroup.LayoutParams.MATCH_PARENT
                     )
-                    implementationMode = PreviewView.ImplementationMode.COMPATIBLE
                 }
-
-                val cameraProviderFuture = ProcessCameraProvider.getInstance(ctx)
-                cameraProviderFuture.addListener({
-                    val cameraProvider = cameraProviderFuture.get()
-                    val preview = Preview.Builder().build().also {
-                        it.setSurfaceProvider(previewView.surfaceProvider)
-                    }
-
-                    val imageCapture = ImageCapture.Builder()
-                        .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
-                        .build()
-                    imageCaptureInstance = imageCapture
-
-                    val motionAnalyzer = MotionAnalyzer(
-                        sensitivity = motionSensitivity,
-                        onMotion = { score ->
-                            viewModel.onMotionDetected(score)
-                        },
-                        onFrameCaptured = { jpegBytes ->
-                            viewModel.updateLiveFrame(jpegBytes)
-                        }
-                    )
-
-                    val imageAnalysis = ImageAnalysis.Builder()
-                        .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                        .build()
-                        .also {
-                            it.setAnalyzer(cameraExecutor, motionAnalyzer)
-                        }
-
-                    val selector = if (cameraFacing == CameraFacing.FRONT) {
-                        CameraSelector.DEFAULT_FRONT_CAMERA
-                    } else {
-                        CameraSelector.DEFAULT_BACK_CAMERA
-                    }
-
-                    try {
-                        cameraProvider.unbindAll()
-                        cameraInstance = cameraProvider.bindToLifecycle(
-                            lifecycleOwner,
-                            selector,
-                            preview,
-                            imageCapture,
-                            imageAnalysis
-                        )
-                    } catch (e: Exception) {
-                        e.printStackTrace()
-                    }
-                }, ContextCompat.getMainExecutor(ctx))
-
-                previewView
-            },
-            update = { previewView ->
-                val cameraProviderFuture = ProcessCameraProvider.getInstance(previewView.context)
-                cameraProviderFuture.addListener({
-                    val cameraProvider = cameraProviderFuture.get()
-                    val preview = Preview.Builder().build().also {
-                        it.setSurfaceProvider(previewView.surfaceProvider)
-                    }
-
-                    val imageCapture = ImageCapture.Builder()
-                        .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
-                        .build()
-                    imageCaptureInstance = imageCapture
-
-                    val motionAnalyzer = MotionAnalyzer(
-                        sensitivity = motionSensitivity,
-                        onMotion = { score ->
-                            viewModel.onMotionDetected(score)
-                        },
-                        onFrameCaptured = { jpegBytes ->
-                            viewModel.updateLiveFrame(jpegBytes)
-                        }
-                    )
-
-                    val imageAnalysis = ImageAnalysis.Builder()
-                        .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                        .build()
-                        .also {
-                            it.setAnalyzer(cameraExecutor, motionAnalyzer)
-                        }
-
-                    val selector = if (cameraFacing == CameraFacing.FRONT) {
-                        CameraSelector.DEFAULT_FRONT_CAMERA
-                    } else {
-                        CameraSelector.DEFAULT_BACK_CAMERA
-                    }
-
-                    try {
-                        cameraProvider.unbindAll()
-                        cameraInstance = cameraProvider.bindToLifecycle(
-                            lifecycleOwner,
-                            selector,
-                            preview,
-                            imageCapture,
-                            imageAnalysis
-                        )
-                    } catch (e: Exception) {
-                        e.printStackTrace()
-                    }
-                }, ContextCompat.getMainExecutor(previewView.context))
             },
             modifier = Modifier.fillMaxSize()
         )
@@ -328,6 +217,33 @@ fun CameraTransmitterScreen(
                         color = PsCyan
                     )
                 }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // Account Linked Confirmation Pill
+            Row(
+                modifier = Modifier
+                    .align(Alignment.CenterHorizontally)
+                    .clip(RoundedCornerShape(99.dp))
+                    .background(Color.Black.copy(alpha = 0.70f))
+                    .border(1.dp, PsSuccess.copy(alpha = 0.4f), RoundedCornerShape(99.dp))
+                    .padding(horizontal = 10.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.CloudDone,
+                    contentDescription = null,
+                    tint = PsSuccess,
+                    modifier = Modifier.size(13.dp)
+                )
+                Spacer(modifier = Modifier.width(5.dp))
+                Text(
+                    text = "Salva na conta: $accountEmail",
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = Color.White.copy(alpha = 0.9f)
+                )
             }
         }
 
@@ -443,26 +359,17 @@ fun CameraTransmitterScreen(
                         .clip(CircleShape)
                         .background(colors.primary)
                         .clickable {
-                            imageCaptureInstance?.let { capture ->
-                                capture.takePicture(
-                                    cameraExecutor,
-                                    object : ImageCapture.OnImageCapturedCallback() {
-                                        override fun onCaptureSuccess(image: androidx.camera.core.ImageProxy) {
-                                            val buffer = image.planes[0].buffer
-                                            val bytes = ByteArray(buffer.remaining())
-                                            buffer.get(bytes)
-                                            val bmp = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-                                            if (bmp != null) {
-                                                viewModel.saveSnapshot(bmp, "Câmera Local")
-                                            }
-                                            image.close()
-                                        }
-
-                                        override fun onError(exception: ImageCaptureException) {
-                                            exception.printStackTrace()
-                                        }
-                                    }
-                                )
+                            val wv = viewModel.webRtcManager?.getOrCreateWebView(context)
+                            if (wv != null && wv.width > 0 && wv.height > 0) {
+                                try {
+                                    val bitmap = Bitmap.createBitmap(wv.width, wv.height, Bitmap.Config.ARGB_8888)
+                                    val canvas = android.graphics.Canvas(bitmap)
+                                    wv.draw(canvas)
+                                    viewModel.saveSnapshot(bitmap, "Câmera Local")
+                                    Toast.makeText(context, "Foto salva com sucesso!", Toast.LENGTH_SHORT).show()
+                                } catch (e: Exception) {
+                                    e.printStackTrace()
+                                }
                             }
                         }
                         .testTag("host_snapshot_btn"),
@@ -554,7 +461,6 @@ fun CameraTransmitterScreen(
         // QR Code Pairing Dialog
         if (showQrDialog) {
             val rawPin = pairingPin.replace("-", "")
-            val streamUrl = "http://$localIp:8080"
             val pairUri = "pscam://pair?id=${viewModel.localDeviceId}&pin=$rawPin&ip=$localIp:8080"
             val qrBitmap = remember(pairUri) {
                 QRCodeUtil.generateQRCode(pairUri, 512, 512)
