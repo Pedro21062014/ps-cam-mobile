@@ -18,8 +18,8 @@ object QRCodeUtil {
         content: String,
         width: Int = 512,
         height: Int = 512,
-        darkColor: Int = android.graphics.Color.WHITE,
-        lightColor: Int = android.graphics.Color.TRANSPARENT
+        darkColor: Int = android.graphics.Color.BLACK,
+        lightColor: Int = android.graphics.Color.WHITE
     ): Bitmap? {
         if (content.isEmpty()) return null
         return try {

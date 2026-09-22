@@ -152,14 +152,14 @@ fun CameraPermissionWrapper(
                 )
                 Spacer(modifier = Modifier.height(16.dp))
                 Text(
-                    text = "Permissão de Câmera Necessária",
+                    text = "Permissões de Câmera e Microfone",
                     fontSize = 18.sp,
                     fontWeight = FontWeight.Bold,
                     color = colors.textPrimary
                 )
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(
-                    text = "O PS Cam precisa de acesso à câmera para monitoramento em tempo real e detecção de movimento.",
+                    text = "O PS Cam precisa de acesso à câmera e microfone para transmissão em tempo real (< 200ms) e segurança.",
                     fontSize = 13.sp,
                     color = colors.textSecondary,
                     textAlign = TextAlign.Center

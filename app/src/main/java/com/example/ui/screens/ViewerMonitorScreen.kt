@@ -2,6 +2,8 @@ package com.example.ui.screens
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.util.Base64
+import com.google.firebase.database.ValueEventListener
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -82,6 +84,7 @@ fun ViewerMonitorScreen(
     val hostIp by viewModel.targetHostIp.collectAsState()
     val port by viewModel.targetPort.collectAsState()
     val deviceName by viewModel.targetDeviceName.collectAsState()
+    val targetDeviceId by viewModel.targetDeviceId.collectAsState()
 
     var latestBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var isConnected by remember { mutableStateOf(false) }
@@ -98,9 +101,37 @@ fun ViewerMonitorScreen(
             .build()
     }
 
-    // Polling snapshot frames & status from camera stream server
+    val activeDeviceId = remember(targetDeviceId, hostIp) {
+        if (targetDeviceId.isNotEmpty()) targetDeviceId else {
+            if (hostIp.startsWith("cam_")) hostIp else ""
+        }
+    }
+
+    // 1. Cloud / P2P Real-time Live Stream Observer (Internet / Without IP)
+    DisposableEffect(activeDeviceId) {
+        if (activeDeviceId.isEmpty()) return@DisposableEffect onDispose {}
+
+        val listener = viewModel.firebaseManager.observeLiveStream(activeDeviceId) { base64Str ->
+            try {
+                val decodedBytes = Base64.decode(base64Str, Base64.DEFAULT)
+                val bmp = BitmapFactory.decodeByteArray(decodedBytes, 0, decodedBytes.size)
+                if (bmp != null) {
+                    latestBitmap = bmp
+                    isConnected = true
+                }
+            } catch (_: Exception) {}
+        }
+
+        onDispose {
+            if (listener != null) {
+                viewModel.firebaseManager.removeLiveStreamListener(activeDeviceId, listener)
+            }
+        }
+    }
+
+    // 2. High-speed local stream fallback (when on same Wi-Fi / IP available)
     LaunchedEffect(hostIp, port) {
-        if (hostIp.isEmpty()) return@LaunchedEffect
+        if (hostIp.isEmpty() || hostIp.startsWith("cam_")) return@LaunchedEffect
 
         while (isActive) {
             try {
@@ -140,7 +171,10 @@ fun ViewerMonitorScreen(
                     statusResp.close()
                 }
             } catch (_: Exception) {
-                isConnected = false
+                // If cloud stream already provides frames, stay connected
+                if (latestBitmap == null) {
+                    isConnected = false
+                }
             }
 
             delay(120) // Polling interval ~8 FPS
@@ -148,13 +182,20 @@ fun ViewerMonitorScreen(
     }
 
     fun sendRemoteCommand(command: String) {
-        scope.launch(Dispatchers.IO) {
-            try {
-                val url = "http://$hostIp:$port/control?cmd=$command"
-                val req = Request.Builder().url(url).build()
-                okHttpClient.newCall(req).execute().close()
-            } catch (e: Exception) {
-                e.printStackTrace()
+        // Send command over Cloud / P2P
+        if (activeDeviceId.isNotEmpty()) {
+            viewModel.firebaseManager.sendRemoteCommand(activeDeviceId, command)
+        }
+        // Also send via local HTTP if host IP is available
+        if (hostIp.isNotEmpty() && !hostIp.startsWith("cam_")) {
+            scope.launch(Dispatchers.IO) {
+                try {
+                    val url = "http://$hostIp:$port/control?cmd=$command"
+                    val req = Request.Builder().url(url).build()
+                    okHttpClient.newCall(req).execute().close()
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
             }
         }
     }

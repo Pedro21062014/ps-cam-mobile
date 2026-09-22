@@ -19,6 +19,10 @@ import com.google.firebase.firestore.SetOptions
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.TimeZone
 
 data class CloudCameraDevice(
     val id: String = "",
@@ -33,7 +37,11 @@ data class CloudCameraDevice(
     val motionDetected: Boolean = false,
     val streamUrl: String = "",
     val batteryLevel: Int = 100,
-    val isCharging: Boolean = false
+    val isCharging: Boolean = false,
+    val pin: String = "",
+    val rawPin: String = "",
+    val sessionId: String = "",
+    val type: String = "webrtc"
 ) {
     fun toMap(): Map<String, Any> {
         val stream = if (streamUrl.isNotEmpty()) streamUrl else "http://$ipAddress:$port"
@@ -58,7 +66,12 @@ data class CloudCameraDevice(
             "webUrl" to stream,
             "battery" to batteryLevel,
             "batteryLevel" to batteryLevel,
-            "isCharging" to isCharging
+            "isCharging" to isCharging,
+            "pin" to pin,
+            "rawPin" to rawPin,
+            "code" to rawPin,
+            "sessionId" to sessionId,
+            "type" to type
         )
     }
 
@@ -68,6 +81,10 @@ data class CloudCameraDevice(
             val name = (map["deviceName"] as? String) ?: (map["name"] as? String) ?: "PS Cam"
             val stream = (map["streamUrl"] as? String) ?: (map["webUrl"] as? String) ?: ""
             val onlineVal = map["isOnline"] as? Boolean ?: (map["status"] == "online")
+            val p = (map["pin"] as? String) ?: ""
+            val rp = (map["rawPin"] as? String) ?: (map["code"] as? String) ?: p.replace("-", "")
+            val sId = (map["sessionId"] as? String) ?: ""
+            val t = (map["type"] as? String) ?: "webrtc"
 
             return CloudCameraDevice(
                 id = id,
@@ -82,7 +99,11 @@ data class CloudCameraDevice(
                 motionDetected = map["motionDetected"] as? Boolean ?: false,
                 streamUrl = stream,
                 batteryLevel = (map["battery"] as? Number)?.toInt() ?: (map["batteryLevel"] as? Number)?.toInt() ?: 100,
-                isCharging = map["isCharging"] as? Boolean ?: false
+                isCharging = map["isCharging"] as? Boolean ?: false,
+                pin = p,
+                rawPin = rp,
+                sessionId = sId,
+                type = t
             )
         }
     }
@@ -108,7 +129,7 @@ class FirebaseManager private constructor(private val context: Context) {
         val app = if (FirebaseApp.getApps(context).isEmpty()) {
             val options = FirebaseOptions.Builder()
                 .setApiKey("AIzaSyAaJPo4L5Xq29HO6jgX3psqxbWNZrpKriU")
-                .setApplicationId("1:190762565052:web:83d54e500b3d29dc03ffb9")
+                .setApplicationId("1:190762565052:android:83d54e500b3d29dc03ffb9")
                 .setProjectId("ps-cam")
                 .setDatabaseUrl("https://ps-cam-default-rtdb.firebaseio.com")
                 .setStorageBucket("ps-cam.firebasestorage.app")
@@ -129,7 +150,31 @@ class FirebaseManager private constructor(private val context: Context) {
             startObservingCatalog()
         }
 
-        startObservingCatalog()
+        if (auth.currentUser == null) {
+            autoAuthenticate()
+        } else {
+            startObservingCatalog()
+        }
+    }
+
+    private fun autoAuthenticate() {
+        auth.signInWithEmailAndPassword("pscam_guest_device@pssom.com.br", "pscam_device_pass_2026")
+            .addOnSuccessListener {
+                Log.d("FirebaseManager", "Auto authenticated: ${it.user?.uid}")
+                _currentUser.value = it.user
+                startObservingCatalog()
+            }
+            .addOnFailureListener {
+                auth.createUserWithEmailAndPassword("pscam_guest_device@pssom.com.br", "pscam_device_pass_2026")
+                    .addOnSuccessListener { res ->
+                        _currentUser.value = res.user
+                        startObservingCatalog()
+                    }
+                    .addOnFailureListener { e ->
+                        Log.e("FirebaseManager", "Auto auth failed: ${e.message}")
+                        startObservingCatalog()
+                    }
+            }
     }
 
     fun getBatteryInfo(): Pair<Int, Boolean> {
@@ -370,6 +415,372 @@ class FirebaseManager private constructor(private val context: Context) {
         try {
             realtimeDb.getReference("cameras").child(cameraId).removeValue()
         } catch (_: Exception) {}
+    }
+
+    // P2P / Cloud Internet Live Frame Broadcast
+    fun publishLiveFrame(cameraId: String, pin: String = "", rawPin: String = "", base64Jpeg: String) {
+        if (cameraId.isEmpty()) return
+        try {
+            val frameData = if (base64Jpeg.startsWith("data:image")) base64Jpeg else "data:image/jpeg;base64,$base64Jpeg"
+            val timestamp = System.currentTimeMillis()
+            val payload = mapOf(
+                "frame" to frameData,
+                "data" to frameData,
+                "rawFrame" to base64Jpeg,
+                "timestamp" to timestamp,
+                "t" to timestamp,
+                "updatedAt" to timestamp,
+                "deviceId" to cameraId,
+                "pin" to pin,
+                "rawPin" to rawPin
+            )
+
+            val streamRef = realtimeDb.getReference("live_streams").child(cameraId)
+            streamRef.setValue(payload)
+
+            if (rawPin.isNotEmpty()) {
+                realtimeDb.getReference("live_streams").child(rawPin).setValue(payload)
+            }
+            if (pin.isNotEmpty() && pin != rawPin) {
+                realtimeDb.getReference("live_streams").child(pin).setValue(payload)
+            }
+        } catch (_: Exception) {}
+    }
+
+    // Observe Live Stream over Internet (P2P / Cloud Stream)
+    fun observeLiveStream(cameraId: String, onFrameReceived: (String) -> Unit): ValueEventListener? {
+        if (cameraId.isEmpty()) return null
+        return try {
+            val streamRef = realtimeDb.getReference("live_streams").child(cameraId)
+            val listener = object : ValueEventListener {
+                override fun onDataChange(snapshot: DataSnapshot) {
+                    val frameStr = snapshot.child("frame").value as? String
+                    if (!frameStr.isNullOrEmpty()) {
+                        onFrameReceived(frameStr)
+                    }
+                }
+                override fun onCancelled(error: DatabaseError) {}
+            }
+            streamRef.addValueEventListener(listener)
+            listener
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    fun removeLiveStreamListener(cameraId: String, listener: ValueEventListener) {
+        try {
+            realtimeDb.getReference("live_streams").child(cameraId).removeEventListener(listener)
+        } catch (_: Exception) {}
+    }
+
+    // Send Remote Command over Internet (Flash, Siren, Switch, Record)
+    fun sendRemoteCommand(cameraId: String, command: String) {
+        if (cameraId.isEmpty()) return
+        try {
+            val cmdRef = realtimeDb.getReference("commands").child(cameraId)
+            cmdRef.setValue(
+                mapOf(
+                    "command" to command,
+                    "t" to System.currentTimeMillis()
+                )
+            )
+        } catch (_: Exception) {}
+    }
+
+    // Camera Host: Listen for remote commands from Internet (supports FLASH_TOGGLE, SIREN_TOGGLE, CAMERA_SWITCH, etc.)
+    fun observeRemoteCommands(cameraId: String, onCommandReceived: (String) -> Unit): ValueEventListener? {
+        if (cameraId.isEmpty()) return null
+        return try {
+            val cmdRef = realtimeDb.getReference("commands").child(cameraId)
+            val listener = object : ValueEventListener {
+                override fun onDataChange(snapshot: DataSnapshot) {
+                    if (!snapshot.exists()) return
+                    val rawVal = snapshot.value
+                    if (rawVal is String && rawVal.isNotEmpty()) {
+                        onCommandReceived(rawVal)
+                        return
+                    }
+
+                    val cmd = snapshot.child("command").value as? String
+                        ?: snapshot.child("action").value as? String
+                        ?: snapshot.child("cmd").value as? String
+
+                    if (!cmd.isNullOrEmpty()) {
+                        onCommandReceived(cmd)
+                        return
+                    }
+
+                    // Direct boolean triggers
+                    val flash = snapshot.child("flash").value as? Boolean
+                    val siren = snapshot.child("siren").value as? Boolean
+                    val cameraSwitch = snapshot.child("camera").value as? String
+                    if (flash != null) onCommandReceived(if (flash) "FLASH_ON" else "FLASH_OFF")
+                    if (siren != null) onCommandReceived(if (siren) "SIREN_ON" else "SIREN_OFF")
+                    if (!cameraSwitch.isNullOrEmpty()) onCommandReceived("CAMERA_SWITCH")
+                }
+                override fun onCancelled(error: DatabaseError) {}
+            }
+            cmdRef.addValueEventListener(listener)
+            listener
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    // WebRTC Session Synchronization (/sessions/{sessionId})
+    data class WebRtcSessionSubscription(
+        val firestoreRegistration: ListenerRegistration?,
+        val rtdbListener: ValueEventListener?,
+        val sessionId: String,
+        private val rtdbRef: com.google.firebase.database.DatabaseReference?
+    ) {
+        fun remove() {
+            try { firestoreRegistration?.remove() } catch (_: Exception) {}
+            try { rtdbListener?.let { rtdbRef?.removeEventListener(it) } } catch (_: Exception) {}
+        }
+    }
+
+    fun initWebRtcSession(
+        sessionId: String,
+        hostId: String,
+        pin: String,
+        initialCommands: Map<String, Any>
+    ) {
+        if (sessionId.isBlank()) return
+        val isoDate = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).apply {
+            timeZone = TimeZone.getTimeZone("UTC")
+        }.format(Date())
+
+        val payload = mapOf(
+            "hostId" to hostId,
+            "deviceId" to hostId,
+            "peerId" to sessionId,
+            "pin" to pin,
+            "status" to "waiting",
+            "type" to "webrtc",
+            "commands" to initialCommands,
+            "updatedAt" to isoDate,
+            "timestamp" to System.currentTimeMillis()
+        )
+
+        try {
+            firestore.collection("sessions").document(sessionId).set(payload, SetOptions.merge())
+            realtimeDb.getReference("sessions").child(sessionId).setValue(payload)
+        } catch (e: Exception) {
+            Log.e("FirebaseManager", "Error init session: ${e.message}")
+        }
+    }
+
+    fun observeSession(
+        sessionId: String,
+        onSessionUpdate: (peerId: String?, commands: Map<String, Any?>) -> Unit
+    ): WebRtcSessionSubscription {
+        var rtdbListener: ValueEventListener? = null
+        var fsListener: ListenerRegistration? = null
+        val rtdbRef = realtimeDb.getReference("sessions").child(sessionId)
+
+        try {
+            fsListener = firestore.collection("sessions").document(sessionId)
+                .addSnapshotListener { snapshot, error ->
+                    if (error != null) {
+                        Log.w("FirebaseManager", "Session listen error: ${error.message}")
+                        return@addSnapshotListener
+                    }
+                    if (snapshot != null && snapshot.exists()) {
+                        val peerId = snapshot.getString("peerId")
+                        @Suppress("UNCHECKED_CAST")
+                        val commands = snapshot.get("commands") as? Map<String, Any?> ?: emptyMap()
+                        onSessionUpdate(peerId, commands)
+                    }
+                }
+        } catch (e: Exception) {
+            Log.e("FirebaseManager", "Firestore session observe error: ${e.message}")
+        }
+
+        try {
+            val l = object : ValueEventListener {
+                override fun onDataChange(snapshot: DataSnapshot) {
+                    if (snapshot.exists()) {
+                        val peerId = snapshot.child("peerId").value as? String
+                        @Suppress("UNCHECKED_CAST")
+                        val cmdObj = snapshot.child("commands").value as? Map<String, Any?> ?: emptyMap()
+                        onSessionUpdate(peerId, cmdObj)
+                    }
+                }
+                override fun onCancelled(error: DatabaseError) {}
+            }
+            rtdbRef.addValueEventListener(l)
+            rtdbListener = l
+        } catch (_: Exception) {}
+
+        return WebRtcSessionSubscription(fsListener, rtdbListener, sessionId, rtdbRef)
+    }
+
+    // Register 6-Digit Pairing PIN for Web & Mobile instant pairing (both formatted '489-123' and raw '489123')
+    fun registerPairingPin(
+        pin: String,
+        cameraId: String,
+        deviceName: String,
+        ipAddress: String,
+        port: Int,
+        sessionId: String = "",
+        type: String = "webrtc"
+    ) {
+        val cleanPin = pin.replace("-", "").trim()
+        if (cleanPin.isEmpty() || cameraId.isEmpty()) return
+
+        val formattedPin = if (cleanPin.length == 6 && !pin.contains("-")) {
+            "${cleanPin.substring(0, 3)}-${cleanPin.substring(3)}"
+        } else pin
+
+        val effectiveSessionId = sessionId.ifEmpty { "pscam_$cleanPin" }
+        val isoDate = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).apply {
+            timeZone = TimeZone.getTimeZone("UTC")
+        }.format(Date())
+
+        val (battery, isCharging) = getBatteryInfo()
+        val user = _currentUser.value
+        val userEmail = if (user != null && !user.isAnonymous && !user.email.isNullOrEmpty() && !user.email!!.contains("guest")) {
+            user.email!!
+        } else {
+            "pssom.com.br@gmail.com"
+        }
+        val userId = user?.uid ?: "user_pssom"
+
+        val timestampNow = System.currentTimeMillis()
+        val payload = mapOf(
+            "id" to cameraId,
+            "deviceId" to cameraId,
+            "name" to deviceName,
+            "deviceName" to deviceName,
+            "ipAddress" to ipAddress,
+            "ip" to ipAddress,
+            "port" to port,
+            "streamUrl" to "http://$ipAddress:$port/video",
+            "snapshotUrl" to "http://$ipAddress:$port/snapshot",
+            "pin" to formattedPin,
+            "rawPin" to cleanPin,
+            "code" to cleanPin,
+            "type" to type,
+            "sessionId" to effectiveSessionId,
+            "peerId" to effectiveSessionId,
+            "status" to "online",
+            "isOnline" to true,
+            "battery" to battery,
+            "batteryLevel" to battery,
+            "batteryCharging" to isCharging,
+            "isCharging" to isCharging,
+            "userId" to userId,
+            "userEmail" to userEmail,
+            "updatedAt" to timestampNow,
+            "updatedAtIso" to isoDate,
+            "timestamp" to timestampNow
+        )
+
+        try {
+            // Register both raw PIN ('489123') and formatted PIN ('489-123') in Firestore /pins
+            firestore.collection("pins").document(cleanPin).set(payload, SetOptions.merge())
+                .addOnSuccessListener { Log.d("FirebaseManager", "PIN $cleanPin registered in Firestore /pins") }
+                .addOnFailureListener { e -> Log.e("FirebaseManager", "Error /pins/$cleanPin: ${e.message}") }
+
+            firestore.collection("pins").document(formattedPin).set(payload, SetOptions.merge())
+
+            // Also register in Firestore /cameras and /devices so any query by PIN or ID succeeds
+            firestore.collection("cameras").document(cleanPin).set(payload, SetOptions.merge())
+            firestore.collection("cameras").document(formattedPin).set(payload, SetOptions.merge())
+            firestore.collection("cameras").document(cameraId).set(payload, SetOptions.merge())
+            firestore.collection("devices").document(cleanPin).set(payload, SetOptions.merge())
+            firestore.collection("devices").document(cameraId).set(payload, SetOptions.merge())
+
+            // Also write to user cameras path
+            firestore.collection("users").document(userId).collection("cameras").document(cameraId).set(payload, SetOptions.merge())
+
+            // Realtime Database catalog writes (/pins, /cameras, /devices)
+            realtimeDb.getReference("pins").child(cleanPin).setValue(payload)
+            realtimeDb.getReference("pins").child(formattedPin).setValue(payload)
+            realtimeDb.getReference("cameras").child(cleanPin).setValue(payload)
+            realtimeDb.getReference("cameras").child(formattedPin).setValue(payload)
+            realtimeDb.getReference("cameras").child(cameraId).setValue(payload)
+            realtimeDb.getReference("devices").child(cleanPin).setValue(payload)
+            realtimeDb.getReference("devices").child(cameraId).setValue(payload)
+        } catch (e: Exception) {
+            Log.e("FirebaseManager", "Error registering PIN: ${e.message}")
+        }
+    }
+
+    // Resolve 6-Digit Pairing PIN or Camera ID from Web or Mobile Viewer
+    fun resolveCameraByPin(code: String, onResult: (CloudCameraDevice?) -> Unit) {
+        val cleanCode = code.replace("-", "").trim()
+        if (cleanCode.isEmpty()) {
+            onResult(null)
+            return
+        }
+
+        // 1. Check if it matches a PIN in Realtime Database
+        realtimeDb.getReference("pins").child(cleanCode).get().addOnSuccessListener { snapshot ->
+            val devId = snapshot.child("deviceId").value as? String
+            val name = snapshot.child("deviceName").value as? String ?: "Câmera Pareada"
+            val ip = snapshot.child("ipAddress").value as? String ?: ""
+            val port = (snapshot.child("port").value as? Long)?.toInt() ?: 8080
+
+            if (!devId.isNullOrEmpty()) {
+                onResult(
+                    CloudCameraDevice(
+                        id = devId,
+                        deviceName = name,
+                        ipAddress = ip,
+                        port = port,
+                        isOnline = true
+                    )
+                )
+            } else {
+                // 2. Check if the code is directly a Camera ID in cameras collection
+                realtimeDb.getReference("cameras").child(cleanCode).get().addOnSuccessListener { camSnap ->
+                    if (camSnap.exists()) {
+                        val cName = camSnap.child("deviceName").value as? String ?: "Câmera Remota"
+                        val cIp = camSnap.child("ipAddress").value as? String ?: ""
+                        val cPort = (camSnap.child("port").value as? Long)?.toInt() ?: 8080
+                        onResult(
+                            CloudCameraDevice(
+                                id = cleanCode,
+                                deviceName = cName,
+                                ipAddress = cIp,
+                                port = cPort,
+                                isOnline = true
+                            )
+                        )
+                    } else {
+                        // 3. Check Firestore pins
+                        firestore.collection("pins").document(cleanCode).get().addOnSuccessListener { doc ->
+                            if (doc.exists()) {
+                                val fId = doc.getString("deviceId") ?: cleanCode
+                                val fName = doc.getString("deviceName") ?: "Câmera Pareada"
+                                val fIp = doc.getString("ipAddress") ?: ""
+                                val fPort = doc.getLong("port")?.toInt() ?: 8080
+                                onResult(
+                                    CloudCameraDevice(
+                                        id = fId,
+                                        deviceName = fName,
+                                        ipAddress = fIp,
+                                        port = fPort,
+                                        isOnline = true
+                                    )
+                                )
+                            } else {
+                                onResult(null)
+                            }
+                        }.addOnFailureListener {
+                            onResult(null)
+                        }
+                    }
+                }.addOnFailureListener {
+                    onResult(null)
+                }
+            }
+        }.addOnFailureListener {
+            onResult(null)
+        }
     }
 
     companion object {

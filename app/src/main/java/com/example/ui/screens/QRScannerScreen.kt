@@ -267,11 +267,30 @@ fun QRScannerScreen(
 
 private fun handleScannedResult(result: String, viewModel: MainViewModel) {
     try {
-        val cleanUrl = result.replace("http://", "").replace("https://", "").trim()
-        val parts = cleanUrl.split(":")
-        val ip = parts[0]
-        val port = if (parts.size > 1) parts[1].split("/")[0].toIntOrNull() ?: 8080 else 8080
-        viewModel.startViewer(ip, port, "Câmera QR")
+        if (result.startsWith("pscam://")) {
+            val id = if (result.contains("id=")) {
+                result.substringAfter("id=").substringBefore("&")
+            } else ""
+            val pin = if (result.contains("pin=")) {
+                result.substringAfter("pin=").substringBefore("&")
+            } else ""
+            val name = if (result.contains("name=")) {
+                result.substringAfter("name=").substringBefore("&")
+            } else "Câmera Pareada"
+            val ip = if (result.contains("ip=")) {
+                result.substringAfter("ip=").substringBefore("&")
+            } else ""
+
+            if (id.isNotEmpty()) {
+                viewModel.startViewer(hostIp = ip.ifEmpty { id }, port = 8080, deviceName = name, deviceId = id)
+            } else if (pin.isNotEmpty()) {
+                viewModel.connectByCode(pin) { _, _ -> }
+            } else {
+                viewModel.connectByCode(result) { _, _ -> }
+            }
+        } else {
+            viewModel.connectByCode(result) { _, _ -> }
+        }
     } catch (_: Exception) {}
 }
 

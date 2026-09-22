@@ -45,6 +45,7 @@ import androidx.compose.material.icons.outlined.Logout
 import androidx.compose.material.icons.outlined.Menu
 import androidx.compose.material.icons.outlined.Notifications
 import androidx.compose.material.icons.outlined.PlayArrow
+import androidx.compose.material.icons.outlined.QrCode
 import androidx.compose.material.icons.outlined.QrCodeScanner
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Security
@@ -269,7 +270,7 @@ fun DashboardScreen(
                 // Tab 5: Mais (Configurações / Conta)
                 NavigationBarItem(
                     selected = selectedTab == 4,
-                    onClick = { showSettingsDialog = true },
+                    onClick = { selectedTab = 4 },
                     icon = {
                         Icon(
                             imageVector = Icons.Outlined.Menu,
@@ -281,12 +282,12 @@ fun DashboardScreen(
                         Text(
                             text = "Mais",
                             fontSize = 11.sp,
-                            fontWeight = FontWeight.Normal
+                            fontWeight = if (selectedTab == 4) FontWeight.Bold else FontWeight.Normal
                         )
                     },
                     colors = NavigationBarItemDefaults.colors(
                         selectedIconColor = Color.Black,
-                        selectedTextColor = colors.primary,
+                        selectedTextColor = if (colors.isDark) colors.primary else Color.Black,
                         indicatorColor = AlfredAmberPrimary,
                         unselectedIconColor = colors.textMuted,
                         unselectedTextColor = colors.textMuted
@@ -296,13 +297,25 @@ fun DashboardScreen(
             }
         }
     ) { innerPadding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(innerPadding)
-                .background(colors.background)
-        ) {
-            // Alfred-Style Amber Top Bar
+        if (selectedTab == 4) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(innerPadding)
+            ) {
+                MoreScreen(
+                    viewModel = viewModel,
+                    onNavigateToAuth = { showAuthDialog = true }
+                )
+            }
+        } else {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(innerPadding)
+                    .background(colors.background)
+            ) {
+                // Alfred-Style Amber Top Bar
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -467,7 +480,8 @@ fun DashboardScreen(
                                     viewModel.startViewer(
                                         recentMotionCamera.ipAddress,
                                         recentMotionCamera.port,
-                                        recentMotionCamera.deviceName
+                                        recentMotionCamera.deviceName,
+                                        recentMotionCamera.id
                                     )
                                 }
                             )
@@ -572,7 +586,12 @@ fun DashboardScreen(
                             AlfredCameraCard(
                                 camera = camera,
                                 onWatchLive = {
-                                    viewModel.startViewer(camera.ipAddress, camera.port, camera.deviceName)
+                                    viewModel.startViewer(
+                                        camera.ipAddress,
+                                        camera.port,
+                                        camera.deviceName,
+                                        camera.id
+                                    )
                                 },
                                 onOpenEvents = {
                                     viewModel.setAppMode(AppMode.TIMELINE)
@@ -643,7 +662,12 @@ fun DashboardScreen(
                             SavedDeviceItem(
                                 device = device,
                                 onClick = {
-                                    viewModel.startViewer(device.ipAddress, device.port, device.deviceName)
+                                    viewModel.startViewer(
+                                        device.ipAddress,
+                                        device.port,
+                                        device.deviceName,
+                                        device.id
+                                    )
                                 },
                                 onDelete = {
                                     viewModel.deleteDevice(device)
@@ -653,6 +677,7 @@ fun DashboardScreen(
                     }
                 }
             }
+        }
         }
 
         // Auth Dialog
@@ -725,60 +750,80 @@ fun DashboardScreen(
             )
         }
 
-        // Manual IP Connect Dialog
+        // Manual PIN / Code / IP Connect Dialog
         if (showManualConnectDialog) {
-            var inputIp by remember { mutableStateOf("") }
-            var inputPort by remember { mutableStateOf("8080") }
-            var inputName by remember { mutableStateOf("Câmera Manual") }
+            var inputCode by remember { mutableStateOf("") }
+            var errorMessage by remember { mutableStateOf<String?>(null) }
+            var isSearching by remember { mutableStateOf(false) }
 
             AlertDialog(
                 onDismissRequest = { showManualConnectDialog = false },
-                title = { Text("Conectar Câmera por IP", fontWeight = FontWeight.Bold) },
+                containerColor = colors.surface,
+                title = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Outlined.QrCode,
+                            contentDescription = null,
+                            tint = colors.primary,
+                            modifier = Modifier.size(24.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Emparelhar com Código", fontWeight = FontWeight.Bold, color = colors.textPrimary)
+                    }
+                },
                 text = {
                     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        OutlinedTextField(
-                            value = inputName,
-                            onValueChange = { inputName = it },
-                            label = { Text("Nome da Câmera") },
-                            singleLine = true,
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedBorderColor = AlfredAmberPrimary,
-                                focusedLabelColor = AlfredAmberPrimary
-                            )
+                        Text(
+                            text = "Digite o PIN de 6 dígitos mostrado na câmera transmissora ou o endereço IP:",
+                            fontSize = 12.sp,
+                            color = colors.textSecondary
                         )
+
                         OutlinedTextField(
-                            value = inputIp,
-                            onValueChange = { inputIp = it },
-                            label = { Text("Endereço IP (ex: 192.168.1.50)") },
+                            value = inputCode,
+                            onValueChange = {
+                                inputCode = it
+                                errorMessage = null
+                            },
+                            label = { Text("Código PIN (ex: 489-123) ou IP") },
+                            placeholder = { Text("Ex: 489-123 ou 192.168.1.50") },
                             singleLine = true,
+                            isError = errorMessage != null,
                             colors = OutlinedTextFieldDefaults.colors(
-                                focusedBorderColor = AlfredAmberPrimary,
-                                focusedLabelColor = AlfredAmberPrimary
-                            )
+                                focusedBorderColor = colors.primary,
+                                focusedLabelColor = colors.primary
+                            ),
+                            modifier = Modifier.fillMaxWidth()
                         )
-                        OutlinedTextField(
-                            value = inputPort,
-                            onValueChange = { inputPort = it },
-                            label = { Text("Porta") },
-                            singleLine = true,
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedBorderColor = AlfredAmberPrimary,
-                                focusedLabelColor = AlfredAmberPrimary
+
+                        if (errorMessage != null) {
+                            Text(
+                                text = errorMessage!!,
+                                fontSize = 11.sp,
+                                color = PsDanger,
+                                fontWeight = FontWeight.Medium
                             )
-                        )
+                        }
                     }
                 },
                 confirmButton = {
                     Button(
                         onClick = {
-                            if (inputIp.isNotBlank()) {
-                                val portInt = inputPort.toIntOrNull() ?: 8080
-                                viewModel.startViewer(inputIp.trim(), portInt, inputName.trim())
-                                showManualConnectDialog = false
+                            if (inputCode.isNotBlank()) {
+                                isSearching = true
+                                viewModel.connectByCode(inputCode.trim()) { success, msg ->
+                                    isSearching = false
+                                    if (success) {
+                                        showManualConnectDialog = false
+                                    } else {
+                                        errorMessage = msg
+                                    }
+                                }
                             }
                         },
-                        colors = ButtonDefaults.buttonColors(containerColor = AlfredAmberPrimary),
-                        shape = RoundedCornerShape(10.dp)
+                        colors = ButtonDefaults.buttonColors(containerColor = colors.primary),
+                        shape = RoundedCornerShape(10.dp),
+                        enabled = !isSearching
                     ) {
                         Text("Conectar", color = Color.Black, fontWeight = FontWeight.Bold)
                     }

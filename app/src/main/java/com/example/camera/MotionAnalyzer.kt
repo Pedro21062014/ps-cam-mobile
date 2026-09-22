@@ -22,6 +22,7 @@ class MotionAnalyzer(
     private val gridWidth = 32
     private val gridHeight = 24
     private var lastAnalysisTime = 0L
+    private var lastFrameCaptureTime = 0L
 
     @OptIn(ExperimentalGetImage::class)
     override fun analyze(imageProxy: ImageProxy) {
@@ -35,7 +36,8 @@ class MotionAnalyzer(
 
         try {
             // Compress frame for stream if needed (throttled to ~15-20 fps)
-            if (onFrameCaptured != null && (currentTime - lastAnalysisTime >= 50)) {
+            if (onFrameCaptured != null && (currentTime - lastFrameCaptureTime >= 50)) {
+                lastFrameCaptureTime = currentTime
                 val jpegBytes = imageProxyToJpeg(imageProxy)
                 if (jpegBytes != null) {
                     onFrameCaptured.invoke(jpegBytes)

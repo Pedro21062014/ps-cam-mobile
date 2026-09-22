@@ -2,6 +2,7 @@ package com.example.ui.screens
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.widget.Toast
 import android.view.ViewGroup
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
@@ -37,11 +38,13 @@ import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.CameraAlt
 import androidx.compose.material.icons.outlined.Cameraswitch
 import androidx.compose.material.icons.outlined.CloudDone
+import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.FlashlightOff
 import androidx.compose.material.icons.outlined.FlashlightOn
 import androidx.compose.material.icons.outlined.NotificationsActive
 import androidx.compose.material.icons.outlined.NotificationsOff
 import androidx.compose.material.icons.outlined.QrCode
+import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material.icons.outlined.Warning
 import androidx.compose.material3.AlertDialog
@@ -81,6 +84,8 @@ import com.example.model.VideoQuality
 import com.example.ui.theme.PsCamTheme
 import com.example.ui.theme.PsCyan
 import com.example.ui.theme.PsDanger
+import com.example.ui.theme.PsOrangeDark
+import com.example.ui.theme.PsOrangePrimary
 import com.example.ui.theme.PsSkyPrimary
 import com.example.ui.theme.PsSuccess
 import com.example.ui.viewmodel.MainViewModel
@@ -106,6 +111,7 @@ fun CameraTransmitterScreen(
     val localIp by viewModel.localIp.collectAsState()
     val motionSensitivity by viewModel.motionSensitivity.collectAsState()
     val currentUser by viewModel.currentUser.collectAsState()
+    val pairingPin by viewModel.pairingPin.collectAsState()
 
     var cameraInstance by remember { mutableStateOf<Camera?>(null) }
     var imageCaptureInstance by remember { mutableStateOf<ImageCapture?>(null) }
@@ -160,7 +166,7 @@ fun CameraTransmitterScreen(
                             viewModel.onMotionDetected(score)
                         },
                         onFrameCaptured = { jpegBytes ->
-                            viewModel.httpStreamServer?.updateFrame(jpegBytes)
+                            viewModel.updateLiveFrame(jpegBytes)
                         }
                     )
 
@@ -212,7 +218,7 @@ fun CameraTransmitterScreen(
                             viewModel.onMotionDetected(score)
                         },
                         onFrameCaptured = { jpegBytes ->
-                            viewModel.httpStreamServer?.updateFrame(jpegBytes)
+                            viewModel.updateLiveFrame(jpegBytes)
                         }
                     )
 
@@ -273,12 +279,12 @@ fun CameraTransmitterScreen(
                     )
                 }
 
-                // IP Stream Pill
+                // Pairing PIN & QR Button
                 Row(
                     modifier = Modifier
                         .clip(RoundedCornerShape(99.dp))
-                        .background(Color.Black.copy(alpha = 0.65f))
-                        .border(1.dp, Color.White.copy(alpha = 0.2f), RoundedCornerShape(99.dp))
+                        .background(Color.Black.copy(alpha = 0.75f))
+                        .border(1.dp, PsOrangePrimary.copy(alpha = 0.4f), RoundedCornerShape(99.dp))
                         .clickable { showQrDialog = true }
                         .padding(horizontal = 12.dp, vertical = 6.dp),
                     verticalAlignment = Alignment.CenterVertically
@@ -291,16 +297,16 @@ fun CameraTransmitterScreen(
                     )
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
-                        text = "http://$localIp:8080",
+                        text = "PIN: $pairingPin",
                         fontSize = 12.sp,
-                        fontWeight = FontWeight.SemiBold,
+                        fontWeight = FontWeight.Bold,
                         color = Color.White
                     )
                     Spacer(modifier = Modifier.width(6.dp))
                     Icon(
                         imageVector = Icons.Outlined.QrCode,
                         contentDescription = "Ver QR",
-                        tint = PsSkyPrimary,
+                        tint = PsOrangePrimary,
                         modifier = Modifier.size(16.dp)
                     )
                 }
@@ -322,32 +328,6 @@ fun CameraTransmitterScreen(
                         color = PsCyan
                     )
                 }
-            }
-
-            Spacer(modifier = Modifier.height(8.dp))
-
-            // Cloud Catalog Sync Pill
-            Row(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(20.dp))
-                    .background(Color.Black.copy(alpha = 0.55f))
-                    .padding(horizontal = 10.dp, vertical = 4.dp)
-                    .align(Alignment.CenterHorizontally),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(
-                    imageVector = Icons.Outlined.CloudDone,
-                    contentDescription = null,
-                    tint = PsSuccess,
-                    modifier = Modifier.size(14.dp)
-                )
-                Spacer(modifier = Modifier.width(6.dp))
-                Text(
-                    text = "Publicada no Catálogo Nuvem Firebase",
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Medium,
-                    color = Color.White.copy(alpha = 0.9f)
-                )
             }
         }
 
@@ -573,21 +553,32 @@ fun CameraTransmitterScreen(
 
         // QR Code Pairing Dialog
         if (showQrDialog) {
+            val rawPin = pairingPin.replace("-", "")
             val streamUrl = "http://$localIp:8080"
-            val qrBitmap = remember(streamUrl) {
-                QRCodeUtil.generateQRCode(streamUrl, 512, 512)
+            val pairUri = "pscam://pair?id=${viewModel.localDeviceId}&pin=$rawPin&ip=$localIp:8080"
+            val qrBitmap = remember(pairUri) {
+                QRCodeUtil.generateQRCode(pairUri, 512, 512)
             }
 
             AlertDialog(
                 onDismissRequest = { showQrDialog = false },
                 containerColor = colors.surface,
                 title = {
-                    Text(
-                        text = "Parear Monitor PS Cam",
-                        fontSize = 18.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = colors.textPrimary
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Outlined.QrCode,
+                            contentDescription = null,
+                            tint = PsOrangePrimary,
+                            modifier = Modifier.size(24.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Código de Emparelhamento",
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = colors.textPrimary
+                        )
+                    }
                 },
                 text = {
                     Column(
@@ -595,20 +586,100 @@ fun CameraTransmitterScreen(
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Text(
-                            text = "Aponte a câmera de outro dispositivo ou abra o endereço no navegador:",
+                            text = "Digite o código abaixo no outro celular ou no painel Web para conectar instantaneamente:",
                             fontSize = 12.sp,
                             color = colors.textSecondary,
                             textAlign = TextAlign.Center
                         )
                         Spacer(modifier = Modifier.height(14.dp))
 
+                        // Large Pairing Code Card
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(14.dp))
+                                .background(PsOrangePrimary.copy(alpha = 0.12f))
+                                .border(1.5.dp, PsOrangePrimary.copy(alpha = 0.45f), RoundedCornerShape(14.dp))
+                                .clickable {
+                                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager
+                                    val clip = android.content.ClipData.newPlainText("PS Cam PIN", pairingPin)
+                                    clipboard?.setPrimaryClip(clip)
+                                    Toast.makeText(context, "Código $pairingPin copiado!", Toast.LENGTH_SHORT).show()
+                                }
+                                .padding(vertical = 12.dp, horizontal = 16.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text(
+                                    text = "CÓDIGO DE ACESSO",
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    letterSpacing = 1.sp,
+                                    color = PsOrangeDark
+                                )
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.Center
+                                ) {
+                                    Text(
+                                        text = pairingPin,
+                                        fontSize = 28.sp,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        letterSpacing = 3.sp,
+                                        color = colors.textPrimary
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Icon(
+                                        imageVector = Icons.Outlined.ContentCopy,
+                                        contentDescription = "Copiar",
+                                        tint = PsOrangeDark,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        // Generate New PIN Button
+                        Button(
+                            onClick = {
+                                val newPin = viewModel.generateNewPin()
+                                Toast.makeText(context, "Novo código gerado: $newPin", Toast.LENGTH_SHORT).show()
+                            },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = colors.surfaceLight,
+                                contentColor = colors.textPrimary
+                            ),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.height(34.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.Refresh,
+                                contentDescription = "Gerar Novo Código",
+                                tint = PsOrangePrimary,
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "Gerar Novo Código",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(14.dp))
+
+                        // High-contrast QR Code
                         if (qrBitmap != null) {
                             Box(
                                 modifier = Modifier
-                                    .size(200.dp)
+                                    .size(180.dp)
                                     .clip(RoundedCornerShape(12.dp))
                                     .background(Color.White)
-                                    .padding(8.dp),
+                                    .border(2.dp, Color.Black.copy(alpha = 0.08f), RoundedCornerShape(12.dp))
+                                    .padding(10.dp),
                                 contentAlignment = Alignment.Center
                             ) {
                                 Image(
@@ -618,24 +689,16 @@ fun CameraTransmitterScreen(
                                 )
                             }
                         }
-
-                        Spacer(modifier = Modifier.height(14.dp))
-                        Text(
-                            text = streamUrl,
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = colors.primary
-                        )
                     }
                 },
                 confirmButton = {
                     Button(
                         onClick = { showQrDialog = false },
-                        colors = ButtonDefaults.buttonColors(containerColor = colors.primary),
+                        colors = ButtonDefaults.buttonColors(containerColor = PsOrangePrimary),
                         shape = RoundedCornerShape(10.dp)
                     ) {
                         Text(
-                            "Pronto",
+                            "Fechar",
                             color = Color.Black,
                             fontWeight = FontWeight.Bold
                         )
